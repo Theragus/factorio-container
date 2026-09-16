@@ -1,0 +1,5 @@
+# Only the scripts under docker/ are needed in the build context; everything
+# else just slows the build down. (An excluded directory cannot have
+# individual files re-included, so the whole directory is un-excluded.)
+*
+!docker

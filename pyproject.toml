@@ -1,0 +1,10 @@
+# Configuration for the release-automation tooling in scripts/ and tests/.
+# There is no Python package here - the scripts are stdlib-only and run
+# straight from the checkout.
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]

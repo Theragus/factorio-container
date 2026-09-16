@@ -1,0 +1,7 @@
+ignored:
+  # Pinning apt package versions would break the build every time Debian
+  # publishes a security update for ca-certificates or gosu.
+  - DL3008
+  # The image intentionally starts as root so the entrypoint can fix ownership
+  # of a bind-mounted /factorio, then drops to uid 845 with gosu.
+  - DL3002

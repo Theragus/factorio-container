@@ -1,0 +1,110 @@
+name: CI
+
+# Validates the packaging itself on every change: lint the scripts, then build
+# and smoke test the image for the current stable release without publishing
+# anything.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Shell scripts
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y shellcheck
+          shellcheck docker/entrypoint.sh docker/healthcheck.sh tests/smoke-test.sh
+
+      - name: Python scripts
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts tests
+          pip install --quiet ruff
+          ruff check scripts tests
+          ruff format --check scripts tests
+
+      - name: Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run the release-tooling tests
+        run: python3 -m unittest discover -s tests -p "test_*.py" -v
+
+  build:
+    name: Build & smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [lint, unit]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve the current stable release
+        id: meta
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import sys
+          sys.path.insert(0, "scripts")
+          from factorio_api import get_release_index, get_sha256
+          index = get_release_index()
+          print(f"version={index.stable}")
+          print(f"sha256={get_sha256(index.stable) or ''}")
+          PY
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: factorio-headless:ci
+          build-args: |
+            FACTORIO_VERSION=${{ steps.meta.outputs.version }}
+            FACTORIO_SHA256=${{ steps.meta.outputs.sha256 }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the image
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: tests/smoke-test.sh factorio-headless:ci "$VERSION"
