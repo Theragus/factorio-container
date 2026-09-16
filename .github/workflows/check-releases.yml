@@ -1,0 +1,103 @@
+name: Check for new Factorio releases
+
+# Runs every day: asks factorio.com which headless versions exist, compares
+# them against the releases this repository already publishes and packages
+# whatever is missing. Nothing is backfilled - on a fresh repository only the
+# current stable and experimental releases are seeded.
+
+on:
+  schedule:
+    # 05:17 UTC daily; the odd minute keeps it off GitHub's busiest slot.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package this exact version instead of auto-detecting
+        required: false
+        type: string
+        default: ""
+      force:
+        description: Rebuild even if a release already exists
+        required: false
+        type: boolean
+        default: false
+      max_builds:
+        description: Maximum number of versions to package in this run
+        required: false
+        type: string
+        default: "5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-releases
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect new releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+      has_new: ${{ steps.detect.outputs.has_new }}
+      summary: ${{ steps.detect.outputs.summary }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compare upstream releases against what is already packaged
+        id: detect
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_FORCE: ${{ inputs.force }}
+          INPUT_MAX_BUILDS: ${{ inputs.max_builds }}
+        run: |
+          set -euo pipefail
+          args=(--max-builds "${INPUT_MAX_BUILDS:-5}")
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            args+=(--version "$INPUT_VERSION")
+          fi
+          if [ "${INPUT_FORCE:-false}" = "true" ]; then
+            args+=(--force)
+          fi
+          python3 scripts/detect_versions.py "${args[@]}"
+
+      - name: Report
+        env:
+          SUMMARY: ${{ steps.detect.outputs.summary }}
+        run: |
+          {
+            echo "### Factorio release check"
+            echo
+            echo "$SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  package:
+    name: Package ${{ matrix.version }}
+    needs: detect
+    if: needs.detect.outputs.has_new == 'true'
+    permissions:
+      contents: write
+      packages: write
+    strategy:
+      fail-fast: false
+      # One at a time: each build downloads ~60 MB from factorio.com, and the
+      # releases are published oldest first.
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.detect.outputs.matrix) }}
+    uses: ./.github/workflows/build-release.yml
+    with:
+      version: ${{ matrix.version }}
+      sha256: ${{ matrix.sha256 }}
+      channels: ${{ matrix.channels }}
+      publish: true

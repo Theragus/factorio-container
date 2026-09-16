@@ -1,0 +1,34 @@
+# Example deployment. Copy it, adjust the volume path and the image tag, then:
+#
+#   docker compose up -d
+#
+# On first start the server generates a map in ./data/saves and writes an
+# editable server-settings.json into ./data/config.
+
+services:
+  factorio:
+    # `stable` follows the current Factorio stable release; pin an exact
+    # version (for example :2.0.77) if you want to control when you update.
+    image: ghcr.io/theragus/factorio-container:stable
+    container_name: factorio
+    restart: unless-stopped
+
+    ports:
+      - "34197:34197/udp"   # game
+      - "27015:27015/tcp"   # RCON - leave this unpublished unless you need it
+
+    volumes:
+      - ./data:/factorio
+
+    environment:
+      # Name used for the map generated on first start.
+      SAVE_NAME: default
+      # Set a password to use RCON; omitting it makes the entrypoint generate
+      # one into /factorio/config/rconpw.
+      # RCON_PASSWORD: change-me
+      # Ownership of the volume; match your host user if you bind-mount.
+      PUID: "845"
+      PGID: "845"
+
+    # Factorio keeps the whole map in memory; give it room on big saves.
+    stop_grace_period: 2m
