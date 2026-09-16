@@ -15,6 +15,8 @@ ARG DEBIAN_IMAGE=debian:12-slim
 # ---------------------------------------------------------------------------
 # Stage 1 - download and unpack the official headless tarball.
 # ---------------------------------------------------------------------------
+# The tag lives in the DEBIAN_IMAGE default above.
+# hadolint ignore=DL3006
 FROM ${DEBIAN_IMAGE} AS fetcher
 
 ARG FACTORIO_VERSION
@@ -55,6 +57,8 @@ RUN set -euo pipefail; \
 # ---------------------------------------------------------------------------
 # Stage 2 - runtime.
 # ---------------------------------------------------------------------------
+# The tag lives in the DEBIAN_IMAGE default above.
+# hadolint ignore=DL3006
 FROM ${DEBIAN_IMAGE} AS runtime
 
 ARG FACTORIO_VERSION
