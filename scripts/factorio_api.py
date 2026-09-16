@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from html import unescape
 
 AVAILABLE_VERSIONS_URL = "https://updater.factorio.com/get-available-versions"
@@ -154,6 +155,23 @@ def download_url(version: str) -> str:
     return DOWNLOAD_URL_TEMPLATE.format(version=version)
 
 
+@lru_cache(maxsize=1)
+def _sha256sums() -> dict[str, str]:
+    """Parse the published checksum page into ``{filename: sha256}``.
+
+    One page covers every recent release, so a run packaging several versions
+    would otherwise re-download the same ~50 KB for each of them. Cached per
+    process; lru_cache does not cache exceptions, so a transient fetch failure
+    is retried rather than remembered.
+    """
+    parsed: dict[str, str] = {}
+    for line in _fetch_text(SHA256SUMS_URL).splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            parsed[parts[1]] = parts[0]
+    return parsed
+
+
 def get_sha256(version: str) -> str | None:
     """Return the published SHA-256 of the headless tarball, if listed.
 
@@ -161,15 +179,14 @@ def get_sha256(version: str) -> str | None:
     published", not "mismatch".
     """
     try:
-        sums = _fetch_text(SHA256SUMS_URL)
+        sums = _sha256sums()
     except FactorioApiError:
         return None
 
-    wanted = {name.format(version=version) for name in TARBALL_NAMES}
-    for line in sums.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[1] in wanted:
-            return parts[0]
+    for name in TARBALL_NAMES:
+        checksum = sums.get(name.format(version=version))
+        if checksum:
+            return checksum
     return None
 
 

@@ -10,11 +10,13 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
-from build_metadata import image_tags  # noqa: E402
+import factorio_api  # noqa: E402
+from build_metadata import image_tags, parse_channels  # noqa: E402
 from detect_versions import TAG_RE, select_versions  # noqa: E402
 from factorio_api import (  # noqa: E402
     ReleaseIndex,
     extract_changelog,
+    get_sha256,
     is_version,
     version_key,
 )
@@ -143,6 +145,65 @@ class ImageTags(unittest.TestCase):
 
     def test_superseded_version_only_gets_version_tags(self):
         self.assertEqual(image_tags("2.1.17", []), ["2.1.17", "2.1"])
+
+
+class ChannelParsing(unittest.TestCase):
+    def test_normal_lists(self):
+        self.assertEqual(parse_channels("stable"), ["stable"])
+        self.assertEqual(
+            parse_channels("stable,experimental"), ["stable", "experimental"]
+        )
+
+    def test_surrounding_whitespace_is_stripped(self):
+        self.assertEqual(
+            parse_channels(" stable , experimental "), ["stable", "experimental"]
+        )
+
+    def test_blank_forms_all_yield_no_channels(self):
+        # Each of these is truthy as a raw string, which is why the caller must
+        # gate the channel lookup on the parsed list instead.
+        for raw in ("", ",", " ", ",,", " , "):
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_channels(raw), [])
+
+
+class Sha256Lookup(unittest.TestCase):
+    SUMS = (
+        "aaaa  factorio-headless_linux_2.0.77.tar.xz\n"
+        "bbbb  factorio_headless_x64_1.1.110.tar.xz\n"
+        "cccc  factorio_linux_2.0.77.tar.xz\n"
+        "garbage line with too many fields here\n"
+    )
+
+    def setUp(self):
+        factorio_api._sha256sums.cache_clear()
+        self.fetches = []
+        self._real = factorio_api._fetch_text
+        factorio_api._fetch_text = self._fake
+        self.addCleanup(setattr, factorio_api, "_fetch_text", self._real)
+        self.addCleanup(factorio_api._sha256sums.cache_clear)
+
+    def _fake(self, url, **kwargs):
+        self.fetches.append(url)
+        return self.SUMS
+
+    def test_finds_the_modern_tarball_name(self):
+        self.assertEqual(get_sha256("2.0.77"), "aaaa")
+
+    def test_finds_the_legacy_tarball_name(self):
+        self.assertEqual(get_sha256("1.1.110"), "bbbb")
+
+    def test_ignores_the_non_headless_build(self):
+        # factorio_linux_2.0.77 is the full game, not the headless tarball.
+        self.assertNotEqual(get_sha256("2.0.77"), "cccc")
+
+    def test_unlisted_version_is_none(self):
+        self.assertIsNone(get_sha256("9.9.9"))
+
+    def test_page_is_fetched_once_for_many_versions(self):
+        for version in ("2.0.77", "1.1.110", "9.9.9", "2.0.77"):
+            get_sha256(version)
+        self.assertEqual(len(self.fetches), 1)
 
 
 class ChangelogExtraction(unittest.TestCase):

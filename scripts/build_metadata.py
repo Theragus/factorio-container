@@ -24,6 +24,16 @@ from factorio_api import (  # noqa: E402
 )
 
 
+def parse_channels(raw: str) -> list[str]:
+    """Split a comma separated channel list, dropping blanks and whitespace.
+
+    Returning [] for "", "," or " " matters: the caller uses emptiness to
+    decide whether to look the channels up, and a raw-string check would treat
+    those as a supplied value.
+    """
+    return [channel.strip() for channel in raw.split(",") if channel.strip()]
+
+
 def image_tags(version: str, channels: list[str]) -> list[str]:
     major, minor, _ = version.split(".")
     tags = [version, f"{major}.{minor}"]
@@ -61,11 +71,14 @@ def main() -> int:
         return 1
 
     sha256 = args.sha256.strip()
-    channels = [c for c in args.channels.split(",") if c]
+    channels = parse_channels(args.channels)
 
-    if not sha256 or not args.channels:
+    # Gate on the parsed list, not the raw string: "," and " " are truthy but
+    # carry no channel, and would otherwise skip the lookup and leave the tags
+    # and the prerelease flag wrong.
+    if not sha256 or not channels:
         try:
-            if not args.channels:
+            if not channels:
                 channels = get_release_index().channels_for(version)
             if not sha256:
                 sha256 = get_sha256(version) or ""
