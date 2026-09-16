@@ -24,6 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RCON_PASSWORD="smoke-$(date +%s)-$RANDOM"
 CONTAINER=""
 WORKDIR=""
+LOG_SNAPSHOT="$(mktemp)"
 FAILURES=0
 
 [[ -n "${IMAGE}" ]] || { echo "usage: $0 <image> <expected-version>" >&2; exit 2; }
@@ -47,19 +48,34 @@ cleanup() {
         docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
     fi
     if [[ -n "${WORKDIR}" && -d "${WORKDIR}" ]]; then
+        # The volume is full of files owned by uid 845, so the host user
+        # cannot remove them directly. Hand them back from inside a container.
+        docker run --rm --user 0:0 -v "${WORKDIR}:/factorio" \
+            --entrypoint chown "${IMAGE}" -R "$(id -u):$(id -g)" /factorio \
+            >/dev/null 2>&1 || true
         rm -rf "${WORKDIR}"
     fi
+    rm -f "${LOG_SNAPSHOT}"
     return "${status}"
 }
 trap cleanup EXIT
 
+# `docker logs ... | grep -q` is a trap under `set -o pipefail`: grep exits on
+# the first match, docker logs then dies of SIGPIPE (141), and pipefail fails
+# the whole pipeline. A needle early in a long log therefore reports "absent"
+# while a late one reports "present". Snapshot the log and grep the file.
+logs_contain() {
+    docker logs "${CONTAINER}" > "${LOG_SNAPSHOT}" 2>&1
+    grep -qF "$1" "${LOG_SNAPSHOT}"
+}
+
 wait_for_log() {
     local needle="$1" deadline=$((SECONDS + STARTUP_TIMEOUT))
     while ((SECONDS < deadline)); do
-        if docker logs "${CONTAINER}" 2>&1 | grep -qF "${needle}"; then
+        if logs_contain "${needle}"; then
             return 0
         fi
-        if ! docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null | grep -q true; then
+        if [[ "$(docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null)" != "true" ]]; then
             echo "container exited before '${needle}' appeared" >&2
             return 1
         fi
@@ -109,7 +125,7 @@ else
     fail "server never reached the InGame state"
 fi
 
-if docker logs "${CONTAINER}" 2>&1 | grep -qF "Hosting game at IP ADDR"; then
+if logs_contain "Hosting game at IP ADDR"; then
     pass "server is hosting on the game port"
 else
     fail "server never reported hosting the game"
@@ -140,7 +156,8 @@ fi
 
 # --- 5. RCON ---------------------------------------------------------------
 step "RCON answers /version"
-rcon_hostport="$(docker port "${CONTAINER}" 27015/tcp | head -1)"
+rcon_bindings="$(docker port "${CONTAINER}" 27015/tcp)"
+rcon_hostport="${rcon_bindings%%$'\n'*}"
 rcon_port="${rcon_hostport##*:}"
 rcon_version=""
 for _ in $(seq 1 12); do
@@ -181,7 +198,7 @@ docker stop --timeout "${SHUTDOWN_TIMEOUT}" "${CONTAINER}" >/dev/null
 stop_duration=$((SECONDS - stop_start))
 exit_code="$(docker inspect -f '{{.State.ExitCode}}' "${CONTAINER}")"
 
-if docker logs "${CONTAINER}" 2>&1 | grep -qF "Goodbye"; then
+if logs_contain "Goodbye"; then
     pass "server logged a clean shutdown after ${stop_duration}s"
 else
     fail "server did not shut down cleanly (no 'Goodbye' in the log)"
@@ -209,7 +226,7 @@ if wait_for_log "changing state from(CreatingGame) to(InGame)"; then
 else
     fail "server did not come back up on the existing volume"
 fi
-if docker logs "${CONTAINER}" 2>&1 | grep -qF "No save found, creating"; then
+if logs_contain "No save found, creating"; then
     fail "server generated a new map instead of loading the existing save"
 else
     pass "existing save was re-used"
